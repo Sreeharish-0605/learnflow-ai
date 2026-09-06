@@ -1,0 +1,20 @@
+# Secrets and local configuration
+.env
+.env.local
+.env.production
+*.key
+*.pem
+*.wallet
+wallet/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local application data
+learnflow.db
+data/
+
+# Operating-system files
+.DS_Store
