@@ -26,3 +26,11 @@ Set `ADMIN_EMAIL` in `.env` to your own email before registering. That account w
 - OCI VCN and NSG: public HTTPS access only to the application.
 
 Never commit `.env`, database wallets, API keys, or OCI credentials.
+
+## OCI Autonomous Database
+
+For production deployment, set `ORACLE_USER`, `ORACLE_PASSWORD`, and the
+service alias from the wallet's `tnsnames.ora` file (for example,
+`learnflowdb_tp`) in the VM's `.env`. Set `WALLET_HOST_DIR` to the secure
+directory that contains the unzipped wallet. Docker mounts this directory at
+`/app/wallet` as read-only. Keep `DATABASE_URL` as SQLite for local work.

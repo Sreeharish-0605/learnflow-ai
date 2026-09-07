@@ -6,3 +6,4 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+      - ${WALLET_HOST_DIR:-./wallet}:/app/wallet:ro
