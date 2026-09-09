@@ -1,5 +1,4 @@
 import os
-import hashlib
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -54,11 +53,12 @@ def learner_context(user: User, db: Session):
 
 
 def mentor_reply(user: User, path: LearningPath | None, tasks: list[Task], progress: dict[int, str], mode: str, question: str) -> str:
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("AI Mentor is not configured yet. Ask the project owner to add OPENAI_API_KEY to the server's .env file.")
+        raise RuntimeError("AI Mentor is not configured yet. Ask the project owner to add GEMINI_API_KEY to the server's .env file.")
 
-    from openai import OpenAI
+    from google import genai
+    from google.genai import types
 
     path_title = path.title if path else "General learning"
     task_lines = "\n".join(
@@ -78,16 +78,17 @@ Learner question: {question or 'No additional question provided.'}
 
 {prompts[mode]}
 Do not claim to have completed tasks for the learner. Keep the response under 350 words."""
-    user_hash = hashlib.sha256(f"learnflow:{user.id}".encode()).hexdigest()
-    response = OpenAI(api_key=api_key).responses.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
-        instructions="You are LearnFlow AI Mentor, a supportive mentor for entry-level software learners. Be accurate, practical, and concise.",
-        input=prompt,
-        max_output_tokens=600,
-        store=False,
-        safety_identifier=user_hash,
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"),
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction="You are LearnFlow AI Mentor, a supportive mentor for entry-level software learners. Be accurate, practical, and concise.",
+            max_output_tokens=600,
+            temperature=0.3,
+        ),
     )
-    return response.output_text or "I could not generate a response. Please try again."
+    return response.text or "I could not generate a response. Please try again."
 
 
 @app.get("/")
