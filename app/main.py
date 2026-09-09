@@ -1,4 +1,5 @@
 import os
+import hashlib
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -37,6 +38,56 @@ def current_user(request: Request, db: Session) -> User | None:
 def render(request: Request, name: str, **context):
     context["user"] = context.get("user")
     return templates.TemplateResponse(request, name, context)
+
+
+def learner_context(user: User, db: Session):
+    path = db.get(LearningPath, user.selected_path_id) if user.selected_path_id else None
+    tasks = db.scalars(
+        select(Task).where(Task.path_id == user.selected_path_id).order_by(Task.position)
+    ).all() if path else []
+    progress = {
+        item.task_id: item.status
+        for item in db.scalars(select(UserTask).where(UserTask.user_id == user.id)).all()
+    }
+    next_task = next((task for task in tasks if progress.get(task.id) != "done"), None)
+    return path, tasks, progress, next_task
+
+
+def mentor_reply(user: User, path: LearningPath | None, tasks: list[Task], progress: dict[int, str], mode: str, question: str) -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("AI Mentor is not configured yet. Ask the project owner to add OPENAI_API_KEY to the server's .env file.")
+
+    from openai import OpenAI
+
+    path_title = path.title if path else "General learning"
+    task_lines = "\n".join(
+        f"- {task.title}: {progress.get(task.id, 'not started').replace('_', ' ')}"
+        for task in tasks
+    ) or "- No tasks are available."
+    prompts = {
+        "explain": "Explain the learner's question in beginner-friendly language. Use a short example and end with one small practice action.",
+        "quiz": "Create exactly 5 beginner-friendly quiz questions. Put each answer immediately below its question. Focus on the selected learning path and unfinished tasks.",
+        "next_step": "Recommend one next task, explain why it is the best next step, and give a short 20-minute action plan.",
+    }
+    if mode not in prompts:
+        raise ValueError("Choose a valid mentor action.")
+    prompt = f"""Learner path: {path_title}
+Current tasks:\n{task_lines}
+Learner question: {question or 'No additional question provided.'}
+
+{prompts[mode]}
+Do not claim to have completed tasks for the learner. Keep the response under 350 words."""
+    user_hash = hashlib.sha256(f"learnflow:{user.id}".encode()).hexdigest()
+    response = OpenAI(api_key=api_key).responses.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        instructions="You are LearnFlow AI Mentor, a supportive mentor for entry-level software learners. Be accurate, practical, and concise.",
+        input=prompt,
+        max_output_tokens=600,
+        store=False,
+        safety_identifier=user_hash,
+    )
+    return response.output_text or "I could not generate a response. Please try again."
 
 
 @app.get("/")
@@ -97,12 +148,10 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return RedirectResponse("/login", 303)
-    path = db.get(LearningPath, user.selected_path_id) if user.selected_path_id else None
-    tasks = db.scalars(select(Task).where(Task.path_id == user.selected_path_id).order_by(Task.position)).all() if path else []
-    progress = {item.task_id: item.status for item in db.scalars(select(UserTask).where(UserTask.user_id == user.id)).all()}
+    path, tasks, progress, next_task = learner_context(user, db)
     completed = sum(status == "done" for status in progress.values())
     percent = round((completed / len(tasks)) * 100) if tasks else 0
-    return render(request, "dashboard.html", user=user, path=path, tasks=tasks, progress=progress, percent=percent, completed=completed)
+    return render(request, "dashboard.html", user=user, path=path, tasks=tasks, progress=progress, percent=percent, completed=completed, next_task=next_task)
 
 
 @app.post("/tasks/{task_id}")
@@ -118,6 +167,31 @@ def update_task(task_id: int, request: Request, status: str = Form(...), db: Ses
         db.add(UserTask(user_id=user.id, task_id=task_id, status=status))
     db.commit()
     return RedirectResponse("/dashboard", 303)
+
+
+@app.get("/mentor")
+def mentor_page(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return RedirectResponse("/login", 303)
+    path, tasks, progress, next_task = learner_context(user, db)
+    return render(request, "mentor.html", user=user, path=path, tasks=tasks, progress=progress, next_task=next_task, answer=None, error=None)
+
+
+@app.post("/mentor")
+def ask_mentor(request: Request, mode: str = Form(...), question: str = Form(""), db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return RedirectResponse("/login", 303)
+    path, tasks, progress, next_task = learner_context(user, db)
+    try:
+        answer = mentor_reply(user, path, tasks, progress, mode, question.strip()[:1000])
+        error = None
+    except (RuntimeError, ValueError) as exc:
+        answer, error = None, str(exc)
+    except Exception:
+        answer, error = None, "AI Mentor could not respond right now. Please try again later."
+    return render(request, "mentor.html", user=user, path=path, tasks=tasks, progress=progress, next_task=next_task, answer=answer, error=error)
 
 
 @app.get("/admin")
